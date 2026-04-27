@@ -1,24 +1,32 @@
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
-const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// CORS - allow all origins
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 app.use(express.json());
 
 const KEY_ID = process.env.RAZORPAY_KEY_ID;
 const KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
 const PLAN_ID = 'plan_ShDfJ8N6OyDgri';
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'OS Brandsmith Backend Running!' });
 });
 
-// Create Subscription
 app.post('/create-subscription', async (req, res) => {
   try {
+    console.log('Creating subscription for:', req.body);
+    
     const { name, email, phone } = req.body;
 
     const data = JSON.stringify({
@@ -26,10 +34,11 @@ app.post('/create-subscription', async (req, res) => {
       total_count: 120,
       quantity: 1,
       customer_notify: 1,
-      notes: { name, email, phone }
+      notes: { name: name || '', email: email || '', phone: phone || '' }
     });
 
     const auth = Buffer.from(`${KEY_ID}:${KEY_SECRET}`).toString('base64');
+    console.log('Using KEY_ID:', KEY_ID ? KEY_ID.substring(0, 10) + '...' : 'NOT SET');
 
     const result = await new Promise((resolve, reject) => {
       const options = {
@@ -39,39 +48,35 @@ app.post('/create-subscription', async (req, res) => {
         headers: {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/json',
-          'Content-Length': data.length
+          'Content-Length': Buffer.byteLength(data)
         }
       };
-      const req = https.request(options, (r) => {
+      
+      const req2 = https.request(options, (r) => {
         let body = '';
         r.on('data', chunk => body += chunk);
-        r.on('end', () => resolve(JSON.parse(body)));
+        r.on('end', () => {
+          console.log('Razorpay response:', body.substring(0, 200));
+          try { resolve(JSON.parse(body)); } 
+          catch(e) { reject(new Error('Invalid JSON: ' + body)); }
+        });
       });
-      req.on('error', reject);
-      req.write(data);
-      req.end();
+      req2.on('error', reject);
+      req2.write(data);
+      req2.end();
     });
 
     if (result.error) {
+      console.log('Razorpay error:', result.error);
       return res.status(400).json({ error: result.error.description });
     }
 
+    console.log('Subscription created:', result.id);
     res.json({ subscription_id: result.id });
 
   } catch (err) {
+    console.error('Server error:', err.message);
     res.status(500).json({ error: err.message });
-  }
-});
-
-// Verify Payment
-app.post('/verify-payment', (req, res) => {
-  try {
-    const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature } = req.body;
-    const text = `${razorpay_payment_id}|${razorpay_subscription_id}`;
-    const generated = crypto.createHmac('sha256', KEY_SECRET).update(text).digest('hex');
-    res.json({ verified: generated === razorpay_signature });
-  } catch (err) {
-    res.status(500).json({ verified: false });
   }
 });
 
